@@ -1,12 +1,52 @@
 # coding=utf-8
+# Version release dict key requirements
+# "mcpyVersion" = McPy version number
+# "minecraftVersion" = Minecraft version number
+# "releaseDate" = this version's release date
+# "downloadLink" = URL to the download of this server archive
+# "md5sum" = MD5 sum of the download
+# "sha1sum" = SHA1 sum of the download
 import os
 import sys
 import logging
 import json
-import requests
 import subprocess
+try:
+    import requests
+except ImportError:
+    logging.fatal("requests is not installed! Installing right now...")
+    subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'requests'])
+    logging.info("Installed! Rerun this script.")
+    sys.exit(1)
 import zipfile
 import hashlib
+import argparse
+import pkg_resources
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--useversion",    # Command line flag to use McPy version
+                    action="store",    # Stores result of this flag in parsedArgs.useversion
+                    default="latest",  # Defaults to "latest" if this flag is not passed
+                    help="version to use: defaults to latest")
+parser.add_argument("--versions",         # Command line flag to print out list of all versions
+                    action="store_true",  # If this flag is defined, parsedArgs.versions will be True: else False
+                    help="print out a list of all McPy versions")
+parser.add_argument("--pythonlocation",  # Command line flag to define a Python interpeter location
+                    action="store",      # Stores the result of this flag in parsedArgs.pythonlocation
+                    default=None,        # If not passed, defaults to None
+                    help="location of the Python 3.8 interpeter: defaults to the one found in the path")
+parsedArgs = parser.parse_args()
+
+
+# Automagically installs all packages required
+required = {"quarry", "twisted", "cryptography", "requests"}
+installed = {pkg.key for pkg in pkg_resources.working_set}
+missing = required - installed
+if missing:
+    # implement pip as a subprocess:
+    subprocess.check_call([sys.executable, '-m', 'pip', 'install', *missing])
+
 
 
 def getReleases() -> list:
@@ -21,8 +61,8 @@ def getReleases() -> list:
     releaseFile = requests.get("https://raw.githubusercontent.com/tazz4843/McPy/master/releases.json")  # All releases
     try:
         releaseFile.raise_for_status()
-    except requests.exceptions.RequestException:
-        logging.fatal("Failed to get update file! Try running this script again.")
+    except requests.exceptions.RequestException as ex:
+        logging.fatal("Failed to get update file! Try running this script again. Error: {0}".format(str(ex)))
         sys.exit(-1)
     releases = json.loads(releaseFile.text)
     if len(releases) == 0:
@@ -55,62 +95,29 @@ releases = getReleases()
 
 systemPath = ":".join(sys.path)
 if "python3.8" not in systemPath:
-    logging.fatal("Python 3.8 was not found in the system path! You can specify the Python 3.8 executable location"
-                  "using --pythonlocation <pathToExecutable>")
-    sys.exit(-4)
+    if parsedArgs.pythonlocation is None:
+        logging.fatal("Python 3.8 was not found in the system path! You can specify the Python 3.8 executable location"
+                      "using --pythonlocation <pathToExecutable>")
+        sys.exit(-4)
+    else:
+        PYTHONINPATH = False
 else:
     PYTHONINPATH = True
 
-if "--versions" in sys.argv:
+if parsedArgs.versions:
     for item in releases:
         print("Release version {0} released on {1} for Minecraft version {2}".format(item["mcpyVersion"],
                                                                                      item["releaseDate"],
                                                                                      item["minecraftVersion"]))
-    print("For latest version, pass \"latest\" as the version.")
+    print("For latest version, pass \"latest\" to the --useversion flag, or don't pass the --useversion flag at all.")
     sys.exit(-3)
-elif "--help" in sys.argv:
-    print("McPy command line flags:")
-    print("--versions               List all available versions.")
-    print("--useversion <version>   Select version <version>.")
-    print("\n")
-elif "--useversion" in sys.argv:
-    version = None
-    for item, i in zip(sys.argv, range(len(sys.argv))):
-        if item == "--useversion":
-            try:
-                version = sys.argv[i + 1]  # Gets next element in sys.argv, which should be the argument to --useversion
-            except KeyError:
-                logging.fatal("No version specified!")
-                sys.exit(-3)
-            break
-    if version is None:
-        logging.fatal("No version specified!")
-        sys.exit(-3)
-elif "--pythonlocation" in sys.argv:
-    pythonLocation = None
-    for item, i in zip(sys.argv, range(len(sys.argv))):
-        if item == "--pythonlocation":
-            try:
-                pythonLocation = sys.argv[i + 1]  # Gets next element in sys.argv, which should be the argument to
-                # --useversion
-            except KeyError:
-                logging.fatal("No Python location specified!")
-                sys.exit(-4)
-            break
-    if pythonLocation is None:
-        logging.fatal("No Python location specified!")
-        sys.exit(-3)
-elif "--useversion" not in sys.argv:
-    logging.fatal("No version specified!")
-    logging.info("Specify a version using --useversion")
-    logging.info("List versions using --versions")
-    logging.info("Use latest version with --useversion latest")
-    sys.exit(-5)
+
+version = parsedArgs.useversion
+pythonlocation = parsedArgs.pythonlocation
 
 currentDir = os.listdir(".")
-if "main.py" not in currentDir:
+if "McPy" not in currentDir:
     logging.warning("main.py not found! Downloading McPy again...")
-    # noinspection PyUnboundLocalVariable
     if version == "latest":
         logging.info("Downloading latest version...")
         version = releases[len(releases) - 1]
@@ -133,30 +140,22 @@ if "main.py" not in currentDir:
     else:
         logging.info("Successfully downloaded McPy!")
     logging.info("Unzipping files...")
-    with open("mcPyTempFile.zip", "w") as zf:
+    with open("mcPyTempFile.zip", "wb") as zf:
         for j in downloadedServer.iter_content(100000):  # 100,000 bytes each time to be safe
             zf.write(j)
     logging.info("Checking checksums...")
     sums = checkSums("mcPyTempFile.zip")
-    # noinspection PyTypeChecker
-    if sums[0] != version["sha1sum"] or sums[1] != version["sha1sum"]:
+    if sums[0] != version["md5sum"] or sums[1] != version["sha1sum"]:
         logging.fatal("MD5 or SHA-1 sum does NOT MATCH! This could be a corruption, or it could be something more "
                       "serious, like someone tampering with your connection.")
         sys.exit(-10)
-    with zipfile.ZipFile("mcPyTempFile.zip") as mcpyZipFile:  # Because Python's special and can't just pipe it
-        # straight in
+    with zipfile.ZipFile("mcPyTempFile.zip") as mcpyZipFile:
         mcpyZipFile.extractall()
     logging.info("To run McPy, rerun this script!")
 else:
     logging.info("McPy found! Running it...")
     if PYTHONINPATH:
-        mcpyProcess = subprocess.Popen("python3.8 main.py")
+        mcpyProcess = subprocess.Popen([sys.executable, os.path.join(os.getcwd(), os.path.join("McPy", "main.py"))])
     else:
-        # noinspection PyUnresolvedReferences
-        if os.isfile(pythonLocation):
-            mcpyProcess = subprocess.Popen("{0} main.py".format(pythonLocation))
-        else:
-            logging.fatal("Python location is not a file! Check you've passed the right path!")
-            sys.exit(-5)
-    # noinspection PyUnresolvedReferences
-    mcpyProcess.join()
+        mcpyProcess = subprocess.Popen("{0} McPy/main.py".format(pythonlocation))
+    mcpyProcess.wait()
